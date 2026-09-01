@@ -1,71 +1,235 @@
-name: Release
+name: Build, Release, and Publish
 
 on:
   push:
     tags:
-      - 'v*'  # Triggers on version tags like v1.0.0, v2.1.3, etc.
-  workflow_dispatch:  # Allows manual triggering
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
 
 jobs:
   build:
-    name: Build and Release
-    runs-on: ubuntu-latest
-    
+    name: Build ${{ matrix.filename }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # =========================
+          # Windows (x64)
+          # =========================
+          - os: windows-latest
+            arch: x64
+            filename: kerbrute-windows-x64.exe
+            binary: kerbrute.exe
+
+          # =========================
+          # Windows (x86)
+          # =========================
+          - os: windows-latest
+            arch: x86
+            filename: kerbrute-windows-x86.exe
+            binary: kerbrute.exe
+
+          # =========================
+          # Linux (x64)
+          # =========================
+          - os: ubuntu-latest
+            arch: x64
+            filename: kerbrute-linux-x64
+            binary: kerbrute
+
+          # =========================
+          # Linux (x86)
+          # =========================
+          - os: ubuntu-latest
+            arch: x86
+            filename: kerbrute-linux-x86
+            binary: kerbrute
+
+          # =========================
+          # Linux ARM64
+          # =========================
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            filename: kerbrute-linux-arm64
+            binary: kerbrute
+
+          # =========================
+          # macOS (Intel)
+          # =========================
+          - os: macos-14
+            arch: x64
+            filename: kerbrute-macos-x64
+            binary: kerbrute
+
+          # =========================
+          # macOS ARM64
+          # =========================
+          - os: macos-15
+            arch: arm64
+            filename: kerbrute-macos-arm64
+            binary: kerbrute
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
-    
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.21'
-    
-    - name: Get version from tag
-      id: get_version
-      run: |
-        VERSION=${GITHUB_REF/refs\/tags\//}
-        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-        echo "RELEASE_NAME=Kerbrute $VERSION" >> $GITHUB_OUTPUT
-    
-    - name: Build binaries
-      run: |
-        mkdir -p dist
-        
-        # Build for multiple platforms
-        GOOS=linux GOARCH=amd64 go build -ldflags="-X main.version=${{ steps.get_version.outputs.VERSION }}" -o dist/kerbrute_linux_amd64 .
-        GOOS=linux GOARCH=386 go build -ldflags="-X main.version=${{ steps.get_version.outputs.VERSION }}" -o dist/kerbrute_linux_386 .
-        
-        GOOS=windows GOARCH=amd64 go build -ldflags="-X main.version=${{ steps.get_version.outputs.VERSION }}" -o dist/kerbrute_windows_amd64.exe .
-        GOOS=windows GOARCH=386 go build -ldflags="-X main.version=${{ steps.get_version.outputs.VERSION }}" -o dist/kerbrute_windows_386.exe .
-        
-        GOOS=darwin GOARCH=amd64 go build -ldflags="-X main.version=${{ steps.get_version.outputs.VERSION }}" -o dist/kerbrute_darwin_amd64 .
-        GOOS=darwin GOARCH=arm64 go build -ldflags="-X main.version=${{ steps.get_version.outputs.VERSION }}" -o dist/kerbrute_darwin_arm64 .
-        
-        # Make binaries executable
-        chmod +x dist/kerbrute_*
-    
-    - name: Calculate checksums
-      run: |
-        cd dist
-        sha256sum * > checksums.txt
-        cd ..
-    
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        name: ${{ steps.get_version.outputs.RELEASE_NAME }}
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-        files: |
-          dist/kerbrute_linux_amd64
-          dist/kerbrute_linux_386
-          dist/kerbrute_windows_amd64.exe
-          dist/kerbrute_windows_386.exe
-          dist/kerbrute_darwin_amd64
-          dist/kerbrute_darwin_arm64
-          dist/checksums.txt
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+
+      - name: Show environment
+        shell: bash
+        run: |
+          echo "OS: $(uname -s 2>/dev/null || echo Windows)"
+          echo "Architecture: $(uname -m 2>/dev/null || echo Windows)"
+          go version
+          go env
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            VERSION="${{ github.event.inputs.tag }}"
+          fi
+          echo "version=${VERSION#v}" >> $GITHUB_OUTPUT
+
+      - name: Build executable
+        shell: bash
+        run: |
+          # Determine GOOS and GOARCH
+          if [[ "${{ matrix.os }}" == windows-latest ]]; then
+            GOOS=windows
+          elif [[ "${{ matrix.os }}" == ubuntu-latest ]] || [[ "${{ matrix.os }}" == ubuntu-24.04-arm ]]; then
+            GOOS=linux
+          elif [[ "${{ matrix.os }}" == macos-* ]]; then
+            GOOS=darwin
+          fi
+
+          if [[ "${{ matrix.arch }}" == x64 ]]; then
+            GOARCH=amd64
+          elif [[ "${{ matrix.arch }}" == x86 ]]; then
+            GOARCH=386
+          elif [[ "${{ matrix.arch }}" == arm64 ]]; then
+            GOARCH=arm64
+          fi
+
+          echo "Building for $GOOS/$GOARCH"
+          
+          # Build with version info
+          GOOS=$GOOS GOARCH=$GOARCH go build \
+            -ldflags="-X main.version=${{ steps.version.outputs.version }}" \
+            -o "${{ matrix.binary }}" \
+            .
+
+      - name: Rename artifact
+        shell: bash
+        run: |
+          if [ -f "${{ matrix.binary }}" ]; then
+            mv "${{ matrix.binary }}" "${{ matrix.filename }}"
+            echo "Renamed to ${{ matrix.filename }}"
+          else
+            echo "Binary not found at ${{ matrix.binary }}"
+            ls -la
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.filename }}
+          path: ${{ matrix.filename }}
+          if-no-files-found: error
+
+  checksums:
+    name: Generate Checksums
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all executables
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd artifacts
+          echo "# Checksums for kerbrute binaries" > checksums.txt
+          echo "" >> checksums.txt
+          for file in *; do
+            if [ -f "$file" ]; then
+              sha256sum "$file" >> checksums.txt
+            fi
+          done
+          cat checksums.txt
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: artifacts/checksums.txt
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [build, checksums]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Show downloaded files
+        shell: bash
+        run: |
+          echo "Release files:"
+          ls -lah artifacts/
+          echo ""
+          echo "File details:"
+          file artifacts/* 2>/dev/null || echo "file command not available"
+
+      - name: Set release tag
+        id: release_tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          name: Kerbrute ${{ steps.release_tag.outputs.tag }}
+          files: artifacts/**
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
